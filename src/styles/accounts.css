@@ -550,10 +550,25 @@ button.accountTokenExportButton {
   white-space: nowrap;
 }
 
-.usageFreshnessBadge > span:last-child {
+.usageFreshnessLabel {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.usageFreshnessAction {
+  flex: 0 0 auto;
+  border: 0;
+  border-left: 1px solid color-mix(in srgb, currentColor 22%, transparent 78%);
+  padding: 0 0 0 6px;
+  color: inherit;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
+}
+
+.usageFreshnessAction:hover {
+  text-decoration: underline;
 }
 
 .usageFreshnessDot {

@@ -265,7 +265,7 @@ struct ParsedSession {
 }
 
 pub(crate) fn collect_codex_token_usage_snapshot() -> Result<CodexTokenUsageSnapshot, String> {
-    let codex_dir = app_paths::codex_dir()?;
+    let codex_dir = app_paths::codex_analytics_dir()?;
     let roots = [
         codex_dir.join("sessions"),
         codex_dir.join("archived_sessions"),
@@ -690,7 +690,7 @@ pub(crate) fn collect_codex_cost_analytics_snapshot_with_progress<F>(
 where
     F: FnMut(CodexCostAnalyticsProgress),
 {
-    let codex_dir = app_paths::codex_dir()?;
+    let codex_dir = app_paths::codex_analytics_dir()?;
     let roots = [
         codex_dir.join("sessions"),
         codex_dir.join("archived_sessions"),

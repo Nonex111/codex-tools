@@ -2,7 +2,11 @@ import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { AccountSummary, CodexTokenUsageSnapshot, UsageWindow } from "../types/app";
 import { useI18n } from "../i18n/I18nProvider";
 import { compareAccountsByRemaining } from "../utils/accountRanking";
-import { classifyUsageRefreshError } from "../utils/usageRefreshError";
+import {
+  classifyUsageRefreshError,
+  extractUsageRefreshStatusCode,
+  shouldSuggestUsageReauthorization,
+} from "../utils/usageRefreshError";
 import {
   formatPlan,
   formatTokenCount,
@@ -222,7 +226,7 @@ function getUiCopy(locale: string): UiCopy {
       noSwitchRecords: "暂无切换记录",
       fromPrefix: "从",
       quickActions: "快捷操作",
-      reauthorize: "测试登录",
+      reauthorize: "重新登录",
       exportAccount: "导出账号",
       exportAll: "全部导出",
       deleteAccount: "删除账号",
@@ -267,7 +271,7 @@ function getUiCopy(locale: string): UiCopy {
     noSwitchRecords: "No switch records yet",
     fromPrefix: "from",
     quickActions: "Quick actions",
-    reauthorize: "Test login",
+    reauthorize: "Sign in again",
     exportAccount: "Export account",
     exportAll: "Export all",
     deleteAccount: "Delete",
@@ -347,22 +351,34 @@ function summarizeUsageRefreshError(
   error: string,
   copy: UsageFreshnessCopy,
 ): string {
-  switch (classifyUsageRefreshError(error)) {
+  const kind = classifyUsageRefreshError(error);
+  let summary: string;
+  switch (kind) {
     case "timeout":
-      return copy.usageFailureTimeout;
+      summary = copy.usageFailureTimeout;
+      break;
     case "network":
-      return copy.usageFailureNetwork;
+      summary = copy.usageFailureNetwork;
+      break;
     case "authorization":
-      return copy.usageFailureAuthorization;
+      summary = copy.usageFailureAuthorization;
+      break;
     case "rateLimited":
-      return copy.usageFailureRateLimited;
+      summary = copy.usageFailureRateLimited;
+      break;
     case "server":
-      return copy.usageFailureServer;
+      summary = copy.usageFailureServer;
+      break;
     case "invalidResponse":
-      return copy.usageFailureInvalidResponse;
+      summary = copy.usageFailureInvalidResponse;
+      break;
     case "unknown":
-      return copy.usageFailureUnknown;
+      summary = copy.usageFailureUnknown;
+      break;
   }
+
+  const statusCode = extractUsageRefreshStatusCode(error, kind);
+  return statusCode === null ? summary : `${summary} (${statusCode})`;
 }
 
 function formatUsageFetchedAt(epochSec: number | null | undefined, locale: string): string | null {
@@ -385,6 +401,8 @@ function UsageFreshnessBadge({
   refreshError,
   locale,
   copy,
+  onReauthorize,
+  reauthorizeLabel,
 }: {
   account: AccountSummary;
   refreshing: boolean;
@@ -392,6 +410,8 @@ function UsageFreshnessBadge({
   refreshError: string | null;
   locale: string;
   copy: UsageFreshnessCopy;
+  onReauthorize?: () => void;
+  reauthorizeLabel?: string;
 }) {
   const fetchedAt = formatUsageFetchedAt(account.usage?.fetchedAt, locale);
   const error = account.usageError || refreshError;
@@ -412,6 +432,13 @@ function UsageFreshnessBadge({
   } else if (fetchedAt) {
     return null;
   }
+  const showReauthorize =
+    Boolean(onReauthorize && reauthorizeLabel) &&
+    Boolean(error) &&
+    shouldSuggestUsageReauthorization(
+      error ?? "",
+      account.authRefreshBlocked,
+    );
 
   return (
     <span
@@ -420,7 +447,19 @@ function UsageFreshnessBadge({
       aria-label={label}
     >
       <span className="usageFreshnessDot" aria-hidden="true" />
-      <span>{label}</span>
+      <span className="usageFreshnessLabel">{label}</span>
+      {showReauthorize ? (
+        <button
+          type="button"
+          className="usageFreshnessAction"
+          onClick={(event) => {
+            event.stopPropagation();
+            onReauthorize?.();
+          }}
+        >
+          {reauthorizeLabel}
+        </button>
+      ) : null}
     </span>
   );
 }
@@ -1036,6 +1075,8 @@ export function AccountsGrid({
                             refreshError={usageRefreshError}
                             locale={locale}
                             copy={copy.accountsGrid}
+                            onReauthorize={() => onReauthorize(account)}
+                            reauthorizeLabel={text.reauthorize}
                           />
                         </span>
                       </span>
@@ -1222,6 +1263,8 @@ export function AccountsGrid({
                   refreshError={usageRefreshError}
                   locale={locale}
                   copy={copy.accountsGrid}
+                  onReauthorize={() => onReauthorize(selectedRow.account)}
+                  reauthorizeLabel={text.reauthorize}
                 />
               </div>
               <UsageMeter

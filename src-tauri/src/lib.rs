@@ -21,7 +21,7 @@ mod tray;
 mod usage;
 mod utils;
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 use std::collections::HashSet;
 use std::io::ErrorKind;
 use std::io::Read;
@@ -79,6 +79,7 @@ const APP_MENU_CHECK_UPDATE_EVENT: &str = "app-menu-check-update";
 const CODEX_COST_ANALYTICS_PROGRESS_EVENT: &str = "codex-cost-analytics-progress";
 const MAIN_WINDOW_VISIBILITY_CHANGED_EVENT: &str = "main-window-visibility-changed";
 const CODEX_COST_ANALYTICS_CACHE_FILE: &str = "codex-cost-analytics-cache.json";
+const CODEX_COST_ANALYTICS_DEV_CACHE_FILE: &str = "codex-cost-analytics-cache.dev-readonly.json";
 const APP_MENU_SETTINGS_ID: &str = "app_menu_settings";
 const APP_MENU_CHECK_UPDATES_ID: &str = "app_menu_check_updates";
 #[cfg(not(target_os = "macos"))]
@@ -862,9 +863,12 @@ async fn delete_codex_session(
     source_path: String,
     session_id: String,
 ) -> Result<DeleteCodexSessionResult, String> {
+    if app_paths::codex_analytics_is_read_only() {
+        return Err("开发预览正在只读分析正式 Codex 会话，不能从开发版删除这些会话。".to_string());
+    }
     let cache_path = codex_cost_analytics_cache_path(&app)?;
     tauri::async_runtime::spawn_blocking(move || {
-        let codex_dir = app_paths::codex_dir()?;
+        let codex_dir = app_paths::codex_analytics_dir()?;
         let roots = [
             codex_dir.join("sessions"),
             codex_dir.join("archived_sessions"),
@@ -956,7 +960,12 @@ fn codex_session_file_matches_id(path: &std::path::Path, session_id: &str) -> Re
 }
 
 fn codex_cost_analytics_cache_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
-    Ok(app_paths::app_data_dir(app)?.join(CODEX_COST_ANALYTICS_CACHE_FILE))
+    let file_name = if app_paths::codex_analytics_is_read_only() {
+        CODEX_COST_ANALYTICS_DEV_CACHE_FILE
+    } else {
+        CODEX_COST_ANALYTICS_CACHE_FILE
+    };
+    Ok(app_paths::app_data_dir(app)?.join(file_name))
 }
 
 fn load_cached_codex_cost_analytics_from_path(
@@ -1229,7 +1238,7 @@ async fn cancel_oauth_login(state: State<'_, AppState>) -> Result<(), String> {
 mod tests {
     use super::bind_oauth_callback_listener;
     use super::build_oauth_callback_url;
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", target_os = "windows"))]
     use super::collect_descendant_process_ids;
     use super::delete_codex_session_from_roots;
     #[cfg(target_os = "macos")]
@@ -1239,6 +1248,8 @@ mod tests {
     use crate::models::StoredAccount;
     use serde_json::json;
     #[cfg(target_os = "macos")]
+    use std::collections::HashSet;
+    #[cfg(target_os = "windows")]
     use std::collections::HashSet;
     use std::fs;
     use std::net::TcpListener;
@@ -1382,6 +1393,27 @@ mod tests {
             (desktop, Some(sysinfo::Pid::from_u32(1))),
             (renderer, Some(desktop)),
             (app_server, Some(renderer)),
+            (independent_cli, Some(sysinfo::Pid::from_u32(2))),
+        ];
+
+        let targets =
+            collect_descendant_process_ids(HashSet::from([desktop]), process_parents.as_slice());
+
+        assert_eq!(targets, HashSet::from([desktop, renderer, app_server]));
+        assert!(!targets.contains(&independent_cli));
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_process_tree_keeps_independent_codex_cli_outside_desktop_descendants() {
+        let desktop = sysinfo::Pid::from_u32(10);
+        let renderer = sysinfo::Pid::from_u32(11);
+        let app_server = sysinfo::Pid::from_u32(12);
+        let independent_cli = sysinfo::Pid::from_u32(20);
+        let process_parents = vec![
+            (desktop, Some(sysinfo::Pid::from_u32(1))),
+            (renderer, Some(desktop)),
+            (app_server, Some(desktop)),
             (independent_cli, Some(sysinfo::Pid::from_u32(2))),
         ];
 
@@ -2317,7 +2349,7 @@ fn macos_codex_main_app_bundle_for_executable(
         .then_some(app_bundle)
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(any(target_os = "macos", target_os = "windows"))]
 fn collect_descendant_process_ids(
     mut targets: HashSet<sysinfo::Pid>,
     process_parents: &[(sysinfo::Pid, Option<sysinfo::Pid>)],
@@ -2331,6 +2363,77 @@ fn collect_descendant_process_ids(
         }
         if targets.len() == previous_count {
             return targets;
+        }
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn running_windows_codex_desktop_process_ids(
+    system: &sysinfo::System,
+    current_user_id: &sysinfo::Uid,
+) -> HashSet<sysinfo::Pid> {
+    let same_user_processes = system
+        .processes()
+        .iter()
+        .filter(|(_, process)| process.user_id() == Some(current_user_id))
+        .map(|(pid, process)| (*pid, process))
+        .collect::<Vec<_>>();
+    let desktop_roots = same_user_processes
+        .iter()
+        .filter_map(|(pid, process)| {
+            process
+                .exe()
+                .filter(|executable| cli::is_windows_codex_app_file(executable))
+                .map(|_| *pid)
+        })
+        .collect::<HashSet<_>>();
+    let process_parents = same_user_processes
+        .into_iter()
+        .map(|(pid, process)| (pid, process.parent()))
+        .collect::<Vec<_>>();
+
+    collect_descendant_process_ids(desktop_roots, &process_parents)
+}
+
+#[cfg(target_os = "windows")]
+fn stop_running_windows_codex_processes() -> Result<(), String> {
+    let mut system = sysinfo::System::new_all();
+    let current_pid = sysinfo::get_current_pid().map_err(|error| error.to_string())?;
+    let current_user_id = system
+        .process(current_pid)
+        .and_then(|process| process.user_id())
+        .cloned()
+        .ok_or_else(|| "无法识别当前用户，未结束 ChatGPT/Codex 应用进程".to_string())?;
+    let mut remaining = running_windows_codex_desktop_process_ids(&system, &current_user_id);
+    if remaining.is_empty() {
+        return Ok(());
+    }
+
+    let deadline = std::time::Instant::now() + Duration::from_secs(3);
+    loop {
+        for pid in &remaining {
+            if let Some(process) = system.process(*pid) {
+                let _ = process.kill();
+            }
+        }
+
+        thread::sleep(Duration::from_millis(50));
+        system.refresh_processes();
+        remaining.retain(|pid| system.process(*pid).is_some());
+        remaining.extend(running_windows_codex_desktop_process_ids(
+            &system,
+            &current_user_id,
+        ));
+        if remaining.is_empty() {
+            return Ok(());
+        }
+        if std::time::Instant::now() >= deadline {
+            let pids = remaining
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!("无法结束正在运行的 ChatGPT/Codex 应用进程: {pids}"));
         }
     }
 }
@@ -2414,9 +2517,7 @@ fn force_stop_running_codex() -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        let _ = new_background_command("taskkill")
-            .args(["/F", "/IM", "Codex.exe", "/T"])
-            .status();
+        stop_running_windows_codex_processes()?;
     }
 
     #[cfg(all(unix, not(target_os = "macos")))]

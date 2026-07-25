@@ -36,6 +36,7 @@ Copy-IfMissing -Source (Join-Path $prodCodexDir "config.toml") -Destination (Joi
 
 $env:CODEX_TOOLS_DEV_DATA_DIR = $appDataDir
 $env:CODEX_TOOLS_DEV_CODEX_DIR = $codexDir
+$env:CODEX_TOOLS_DEV_ANALYTICS_DIR = $prodCodexDir
 
 $cargoBin = Join-Path $env:USERPROFILE ".cargo\\bin"
 if (Test-Path -LiteralPath $cargoBin) {
@@ -54,6 +55,7 @@ if (Test-Path -LiteralPath $rustToolchainBin) {
 Write-Host "开发预览将使用隔离目录:"
 Write-Host ("  app data: {0}" -f $appDataDir)
 Write-Host ("  codex dir: {0}" -f $codexDir)
+Write-Host ("  analytics (read-only): {0}" -f $prodCodexDir)
 
 Set-Location $repoRoot
 npm run tauri -- dev

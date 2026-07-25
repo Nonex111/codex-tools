@@ -779,7 +779,7 @@ impl Drop for WindowsComGuard {
 
 #[cfg(target_os = "windows")]
 fn append_windows_codex_app_candidates_from_dir(candidates: &mut Vec<PathBuf>, dir: &Path) {
-    for name in ["Codex.exe", "Codex Desktop.exe"] {
+    for name in ["ChatGPT.exe", "Codex.exe", "Codex Desktop.exe"] {
         candidates.push(dir.join(name));
     }
 }
@@ -901,10 +901,19 @@ fn is_codex_cli_file(path: &Path) -> bool {
 }
 
 #[cfg(target_os = "windows")]
-fn is_windows_codex_app_file(path: &Path) -> bool {
+pub(crate) fn is_windows_codex_app_file(path: &Path) -> bool {
     let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
         return false;
     };
+
+    if file_name.eq_ignore_ascii_case("chatgpt.exe") {
+        let parent_name = path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|value| value.to_str())
+            .unwrap_or_default();
+        return is_windows_store_codex_path(path) && parent_name.eq_ignore_ascii_case("app");
+    }
 
     if !matches_ignore_ascii_case(file_name, &["codex.exe", "codex desktop.exe"]) {
         return false;
@@ -926,6 +935,42 @@ fn is_windows_codex_app_file(path: &Path) -> bool {
         .unwrap_or_default();
 
     !matches_ignore_ascii_case(parent_name, &["bin"])
+}
+
+#[cfg(all(test, target_os = "windows"))]
+mod windows_tests {
+    use super::is_windows_codex_app_file;
+    use std::path::Path;
+
+    #[test]
+    fn windows_app_matching_accepts_store_chatgpt_main_process() {
+        assert!(is_windows_codex_app_file(Path::new(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.721.4979.0_x64__2p2nqsd0c76g0\app\ChatGPT.exe"
+        )));
+    }
+
+    #[test]
+    fn windows_app_matching_rejects_store_backend_and_unrelated_chatgpt() {
+        assert!(!is_windows_codex_app_file(Path::new(
+            r"C:\Program Files\WindowsApps\OpenAI.Codex_26.721.4979.0_x64__2p2nqsd0c76g0\app\resources\codex.exe"
+        )));
+        assert!(!is_windows_codex_app_file(Path::new(
+            r"C:\Program Files\ChatGPT\ChatGPT.exe"
+        )));
+    }
+
+    #[test]
+    fn windows_app_matching_keeps_legacy_desktop_compatibility_without_cli_shims() {
+        assert!(is_windows_codex_app_file(Path::new(
+            r"C:\Users\tester\AppData\Local\Programs\Codex\Codex.exe"
+        )));
+        assert!(!is_windows_codex_app_file(Path::new(
+            r"C:\Users\tester\AppData\Local\Microsoft\WinGet\Links\Codex.exe"
+        )));
+        assert!(!is_windows_codex_app_file(Path::new(
+            r"C:\Users\tester\AppData\Local\Programs\Codex\resources\codex.exe"
+        )));
+    }
 }
 
 #[cfg(any(windows, target_os = "macos"))]

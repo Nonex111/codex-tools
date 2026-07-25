@@ -3,6 +3,8 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   classifyUsageRefreshError,
+  extractUsageRefreshStatusCode,
+  shouldSuggestUsageReauthorization,
   type UsageRefreshFailureKind,
 } from "../src/utils/usageRefreshError.ts";
 
@@ -73,6 +75,13 @@ const fixtures: Array<{
     expectedLabel: "更新失败：服务暂不可用 · 显示缓存 07/22 09:54",
   },
   {
+    name: "主接口 503 且备用接口返回 403 HTML",
+    error:
+      "请求用量接口失败: https://chatgpt.com/backend-api/wham/usage -> 503 Service Unavailable: biscuit_baker_service_me_circuit_open | https://chatgpt.com/wham/usage -> 403 Forbidden: <html>",
+    expectedKind: "server",
+    expectedLabel: "更新失败：服务暂不可用 · 显示缓存 07/22 09:54",
+  },
+  {
     name: "返回数据无效",
     error:
       "请求用量接口失败: https://chatgpt.com/backend-api/wham/usage -> 解析返回失败: expected value at line 1 column 1",
@@ -110,3 +119,37 @@ for (const fixture of fixtures) {
     );
   });
 }
+
+test("组合错误优先展示主服务的 503", () => {
+  const error =
+    "primary -> 503 Service Unavailable: biscuit_baker_service_me_circuit_open | fallback -> 403 Forbidden: <html>";
+  assert.equal(extractUsageRefreshStatusCode(error), 503);
+  assert.equal(shouldSuggestUsageReauthorization(error), false);
+});
+
+test("401 和失效令牌建议重新登录", () => {
+  assert.equal(
+    shouldSuggestUsageReauthorization(
+      "401 Unauthorized: provided authentication token is expired",
+    ),
+    true,
+  );
+  assert.equal(
+    shouldSuggestUsageReauthorization("invalid_grant: refresh_token expired"),
+    true,
+  );
+});
+
+test("普通 403 不自动建议重新登录", () => {
+  assert.equal(
+    shouldSuggestUsageReauthorization("403 Forbidden: <html>"),
+    false,
+  );
+});
+
+test("账号被停用时不误导用户重新登录", () => {
+  assert.equal(
+    shouldSuggestUsageReauthorization("账号被封禁，请检查邮箱", true),
+    false,
+  );
+});

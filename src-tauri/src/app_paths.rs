@@ -7,6 +7,7 @@ use tauri::Manager;
 
 const DEV_APP_DATA_DIR_ENV: &str = "CODEX_TOOLS_DEV_DATA_DIR";
 const DEV_CODEX_DIR_ENV: &str = "CODEX_TOOLS_DEV_CODEX_DIR";
+const DEV_CODEX_ANALYTICS_DIR_ENV: &str = "CODEX_TOOLS_DEV_ANALYTICS_DIR";
 const APP_IDENTIFIER: &str = "com.carry.codex-tools";
 
 fn env_path(name: &str) -> Option<PathBuf> {
@@ -52,6 +53,20 @@ pub(crate) fn codex_dir() -> Result<PathBuf, String> {
 
     let home = dirs::home_dir().ok_or_else(|| "无法读取 HOME 目录".to_string())?;
     Ok(home.join(".codex"))
+}
+
+pub(crate) fn codex_analytics_dir() -> Result<PathBuf, String> {
+    if cfg!(debug_assertions) {
+        if let Some(path) = env_path(DEV_CODEX_ANALYTICS_DIR_ENV) {
+            return Ok(path);
+        }
+    }
+
+    codex_dir()
+}
+
+pub(crate) fn codex_analytics_is_read_only() -> bool {
+    cfg!(debug_assertions) && env_path(DEV_CODEX_ANALYTICS_DIR_ENV).is_some()
 }
 
 pub(crate) fn codex_auth_path() -> Result<PathBuf, String> {
