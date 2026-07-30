@@ -83,6 +83,6 @@ The macOS menu-bar usage-title controls were visible on Windows even though the 
 
 ## Notes / 说明
 
-- This PR should target upstream `main` after merge commit `689f1a5`. / 本 PR 应以合并提交 `689f1a5` 之后的上游 `main` 为目标分支。
+- This follow-up is based on upstream `main` at `v2.5.0` (`73fe13d`) and should target the current upstream `main`. / 本后续 PR 基于上游 `main` 的 `v2.5.0`（`73fe13d`），并应以当前上游 `main` 为目标分支。
 - Membership expiry is a best-effort ID-token claim. Signing in again can request a fresh claim but cannot guarantee that the server returns one. / 会员到期时间是尽力读取的 ID token 字段；重新登录可以请求新字段，但无法保证服务端一定返回。
 - The original merged PR body remains separate; this draft covers only post-merge follow-up changes. / 原已合并 PR 正文保持独立，本草稿仅覆盖合并后的后续改动。
