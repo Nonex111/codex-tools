@@ -4,7 +4,6 @@ import test from "node:test";
 import {
   classifyUsageRefreshError,
   extractUsageRefreshStatusCode,
-  shouldSuggestUsageReauthorization,
   type UsageRefreshFailureKind,
 } from "../src/utils/usageRefreshError.ts";
 
@@ -124,32 +123,4 @@ test("组合错误优先展示主服务的 503", () => {
   const error =
     "primary -> 503 Service Unavailable: biscuit_baker_service_me_circuit_open | fallback -> 403 Forbidden: <html>";
   assert.equal(extractUsageRefreshStatusCode(error), 503);
-  assert.equal(shouldSuggestUsageReauthorization(error), false);
-});
-
-test("401 和失效令牌建议重新登录", () => {
-  assert.equal(
-    shouldSuggestUsageReauthorization(
-      "401 Unauthorized: provided authentication token is expired",
-    ),
-    true,
-  );
-  assert.equal(
-    shouldSuggestUsageReauthorization("invalid_grant: refresh_token expired"),
-    true,
-  );
-});
-
-test("普通 403 不自动建议重新登录", () => {
-  assert.equal(
-    shouldSuggestUsageReauthorization("403 Forbidden: <html>"),
-    false,
-  );
-});
-
-test("账号被停用时不误导用户重新登录", () => {
-  assert.equal(
-    shouldSuggestUsageReauthorization("账号被封禁，请检查邮箱", true),
-    false,
-  );
 });

@@ -5,7 +5,6 @@ import { compareAccountsByRemaining } from "../utils/accountRanking";
 import {
   classifyUsageRefreshError,
   extractUsageRefreshStatusCode,
-  shouldSuggestUsageReauthorization,
 } from "../utils/usageRefreshError";
 import {
   formatPlan,
@@ -55,6 +54,8 @@ type UiCopy = {
   remainingSuffix: (value: string) => string;
   resetTime: string;
   membershipPeriodEnds: string;
+  membershipPeriodHelp: string;
+  membershipUnavailable: string;
   resetCreditsTitle: string;
   resetCreditsAvailable: (count: number | null) => string;
   resetCreditsExpiresAt: string;
@@ -215,6 +216,9 @@ function getUiCopy(locale: string): UiCopy {
       remainingSuffix: (value) => `剩余 ${value}`,
       resetTime: "重置时间",
       membershipPeriodEnds: "会员到期时间（仅供参考）",
+      membershipPeriodHelp:
+        "该时间来自登录令牌，可能缺失或延迟更新；若显示为空，可尝试重新登录。",
+      membershipUnavailable: "未提供",
       resetCreditsTitle: "重置卡",
       resetCreditsAvailable: (count) => (count === null ? "可用数量未知" : `可用 ${count} 张`),
       resetCreditsExpiresAt: "过期时间（系统本地时间）",
@@ -260,6 +264,9 @@ function getUiCopy(locale: string): UiCopy {
     remainingSuffix: (value) => `${value} remaining`,
     resetTime: "Reset time",
     membershipPeriodEnds: "Membership expiry (for reference only)",
+    membershipPeriodHelp:
+      "This date comes from the sign-in token and may be unavailable or delayed. If it is empty, try signing in again.",
+    membershipUnavailable: "Not provided",
     resetCreditsTitle: "Reset cards",
     resetCreditsAvailable: (count) => (count === null ? "Available count unknown" : `${count} available`),
     resetCreditsExpiresAt: "Expires (system local time)",
@@ -401,8 +408,6 @@ function UsageFreshnessBadge({
   refreshError,
   locale,
   copy,
-  onReauthorize,
-  reauthorizeLabel,
 }: {
   account: AccountSummary;
   refreshing: boolean;
@@ -410,8 +415,6 @@ function UsageFreshnessBadge({
   refreshError: string | null;
   locale: string;
   copy: UsageFreshnessCopy;
-  onReauthorize?: () => void;
-  reauthorizeLabel?: string;
 }) {
   const fetchedAt = formatUsageFetchedAt(account.usage?.fetchedAt, locale);
   const error = account.usageError || refreshError;
@@ -425,20 +428,17 @@ function UsageFreshnessBadge({
       : copy.usageRefreshing;
   } else if (error) {
     tone = "error";
-    const reason = summarizeUsageRefreshError(error, copy);
-    label = fetchedAt
-      ? copy.usageRefreshFailedCached(reason, fetchedAt)
-      : copy.usageRefreshFailed(reason);
+    if (account.authRefreshBlocked) {
+      label = error;
+    } else {
+      const reason = summarizeUsageRefreshError(error, copy);
+      label = fetchedAt
+        ? copy.usageRefreshFailedCached(reason, fetchedAt)
+        : copy.usageRefreshFailed(reason);
+    }
   } else if (fetchedAt) {
     return null;
   }
-  const showReauthorize =
-    Boolean(onReauthorize && reauthorizeLabel) &&
-    Boolean(error) &&
-    shouldSuggestUsageReauthorization(
-      error ?? "",
-      account.authRefreshBlocked,
-    );
 
   return (
     <span
@@ -448,18 +448,6 @@ function UsageFreshnessBadge({
     >
       <span className="usageFreshnessDot" aria-hidden="true" />
       <span className="usageFreshnessLabel">{label}</span>
-      {showReauthorize ? (
-        <button
-          type="button"
-          className="usageFreshnessAction"
-          onClick={(event) => {
-            event.stopPropagation();
-            onReauthorize?.();
-          }}
-        >
-          {reauthorizeLabel}
-        </button>
-      ) : null}
     </span>
   );
 }
@@ -1064,9 +1052,6 @@ export function AccountsGrid({
                           >
                             <span className="statusDot" />
                             <span className="statusLabel">{statusLabel(status, text)}</span>
-                            {status === "issue" ? (
-                              <span className="statusReason">{issueReason ?? text.issueFallbackReason}</span>
-                            ) : null}
                           </span>
                           <UsageFreshnessBadge
                             account={account}
@@ -1075,8 +1060,6 @@ export function AccountsGrid({
                             refreshError={usageRefreshError}
                             locale={locale}
                             copy={copy.accountsGrid}
-                            onReauthorize={() => onReauthorize(account)}
-                            reauthorizeLabel={text.reauthorize}
                           />
                         </span>
                       </span>
@@ -1234,11 +1217,6 @@ export function AccountsGrid({
                   >
                     <span className="statusDot" />
                     <span className="statusLabel">{statusLabel(accountStatus(selectedRow.account), text)}</span>
-                    {accountStatus(selectedRow.account) === "issue" ? (
-                      <span className="statusReason">
-                        {accountIssueReason(selectedRow.account, text.issueFallbackReason) ?? text.issueFallbackReason}
-                      </span>
-                    ) : null}
                   </span>
                 </div>
               </div>
@@ -1263,8 +1241,6 @@ export function AccountsGrid({
                   refreshError={usageRefreshError}
                   locale={locale}
                   copy={copy.accountsGrid}
-                  onReauthorize={() => onReauthorize(selectedRow.account)}
-                  reauthorizeLabel={text.reauthorize}
                 />
               </div>
               <UsageMeter
@@ -1282,15 +1258,46 @@ export function AccountsGrid({
             </section>
 
             <section className="detailMetaGrid">
-              <div>
-                <span>{text.membershipPeriodEnds}</span>
+              <div className="membershipExpiryMeta">
+                <span className="membershipExpiryLabel">
+                  {text.membershipPeriodEnds}
+                  <span className="membershipHelpTip">
+                    <button
+                      type="button"
+                      className="membershipHelpButton"
+                      aria-label={text.membershipPeriodHelp}
+                      aria-describedby={`membership-help-${selectedRow.account.id}`}
+                    >
+                      i
+                    </button>
+                    <span
+                      id={`membership-help-${selectedRow.account.id}`}
+                      className="membershipHelpBubble"
+                      role="tooltip"
+                    >
+                      {text.membershipPeriodHelp}
+                    </span>
+                  </span>
+                </span>
                 <strong>
-                  {formatFullDate(
-                    selectedRow.account.subscriptionActiveUntil,
-                    locale,
-                    text.emptyValue,
-                  )}
+                  {selectedRow.account.subscriptionActiveUntil
+                    ? formatFullDate(
+                        selectedRow.account.subscriptionActiveUntil,
+                        locale,
+                        text.membershipUnavailable,
+                      )
+                    : text.membershipUnavailable}
                 </strong>
+                {!selectedRow.account.subscriptionActiveUntil ? (
+                  <button
+                    type="button"
+                    className="membershipReauthorizeAction"
+                    onClick={() => onReauthorize(selectedRow.account)}
+                    disabled={authBusy}
+                  >
+                    {text.reauthorize}
+                  </button>
+                ) : null}
               </div>
               <div>
                 <span>{text.planType}</span>
