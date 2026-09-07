@@ -16,11 +16,15 @@ mod remote_service;
 mod settings_service;
 mod state;
 mod store;
+#[cfg(target_os = "windows")]
+mod switch_timing;
 mod token_usage;
 mod tray;
 mod tray_visual;
 mod usage;
 mod utils;
+#[cfg(target_os = "windows")]
+mod windows_desktop_lifecycle;
 #[cfg(target_os = "windows")]
 mod windows_taskbar_widget;
 #[cfg(target_os = "windows")]
@@ -1784,6 +1788,8 @@ async fn switch_account_and_launch(
     restart_editors_on_switch: Option<bool>,
     restart_editor_targets: Option<Vec<EditorAppId>>,
 ) -> Result<SwitchAccountResult, String> {
+    #[cfg(target_os = "windows")]
+    let _timing = switch_timing::Phase::start("switch_handler");
     let should_launch_codex = launch_codex.unwrap_or(true);
     #[cfg(target_os = "windows")]
     let windows_launch_plan;

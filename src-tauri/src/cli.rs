@@ -79,6 +79,7 @@ pub(crate) fn prepare_windows_codex_launch(
     configured_path: Option<&str>,
     as_admin: bool,
 ) -> Result<WindowsCodexLaunchPlan, String> {
+    let _timing = crate::switch_timing::Phase::start("desktop_discovery");
     let (store_target, mut discovery_error) = match find_windows_codex_store_target() {
         Ok(target) => (target, None),
         Err(error) => (None, Some(error)),
@@ -138,10 +139,12 @@ impl WindowsCodexLaunchPlan {
     }
 
     pub(crate) fn stop_desktop(&self) -> Result<(), String> {
+        let _timing = crate::switch_timing::Phase::start("desktop_stop");
         let Some(executable) = &self.desktop_to_stop else {
             return Ok(());
         };
-        let mut system = sysinfo::System::new_all();
+        let mut system = sysinfo::System::new();
+        refresh_windows_switch_processes(&mut system);
         let current_pid = sysinfo::get_current_pid().map_err(|error| error.to_string())?;
         let current = system
             .process(current_pid)
@@ -161,40 +164,68 @@ impl WindowsCodexLaunchPlan {
             .map(|(pid, process)| (*pid, process.parent()))
             .collect::<Vec<_>>();
         let targets = windows_switch_stop_targets(roots, &parents, current_pid);
-        let mut remaining = targets
-            .into_iter()
-            .filter_map(|pid| {
-                system
-                    .process(pid)
-                    .map(|process| (pid, process.start_time()))
-            })
-            .collect::<Vec<_>>();
-        log::info!(
-            "CODEX_DESKTOP_STOP executable={} pids={remaining:?}",
-            executable.display()
-        );
-        let deadline = Instant::now() + Duration::from_secs(3);
-        while !remaining.is_empty() {
-            for (pid, start_time) in &remaining {
-                if let Some(process) = system.process(*pid) {
-                    // PID reuse must not turn a validated target into an unrelated kill.
-                    if process.start_time() == *start_time && process.user_id() == Some(&user) {
-                        process.kill();
+        // Acquire handles before taking the authoritative snapshot. Holding each
+        // handle pins process identity while user/session/ancestry are checked.
+        let mut handles = Vec::new();
+        for pid in targets {
+            match crate::windows_desktop_lifecycle::ProcessHandle::open(pid) {
+                Ok(handle) => handles.push(handle),
+                Err(error) => {
+                    refresh_windows_switch_processes(&mut system);
+                    if system.process(pid).is_some() {
+                        return Err(error);
                     }
                 }
             }
-            thread::sleep(Duration::from_millis(50));
-            system.refresh_processes();
-            remaining.retain(|(pid, start_time)| {
-                system
-                    .process(*pid)
-                    .is_some_and(|process| process.start_time() == *start_time)
-            });
-            if Instant::now() >= deadline && !remaining.is_empty() {
-                return Err(format!(
-                    "未能结束已验证的 ChatGPT/Codex 进程，未更改当前账号: {remaining:?}"
-                ));
+        }
+        system = sysinfo::System::new();
+        refresh_windows_switch_processes(&mut system);
+        let roots = verified_windows_desktop_process_ids(&system, &[executable.clone()])?;
+        let parents = system
+            .processes()
+            .iter()
+            .filter(|(_, p)| p.user_id() == Some(&user) && p.session_id() == session)
+            .map(|(pid, p)| (*pid, p.parent()))
+            .collect::<Vec<_>>();
+        let verified = windows_switch_stop_targets(roots.clone(), &parents, current_pid);
+        for handle in &handles {
+            if handle.exited()? {
+                continue;
             }
+            let process = system
+                .process(handle.pid)
+                .ok_or("进程核验状态变化，未更改当前账号。")?;
+            if !verified.contains(&handle.pid)
+                || !process.exe().is_some_and(|path| {
+                    handle
+                        .executable()
+                        .is_ok_and(|actual| windows_paths_equal(path, &actual))
+                })
+            {
+                return Err("进程身份或归属发生变化，未更改当前账号。".into());
+            }
+        }
+        if verified
+            .iter()
+            .any(|pid| !handles.iter().any(|h| h.pid == *pid))
+        {
+            return Err("停止前出现新的桌面子进程，未更改当前账号，请重试。".into());
+        }
+        crate::windows_desktop_lifecycle::stop(&handles, &roots)?;
+        refresh_windows_switch_processes(&mut system);
+        let parents = system
+            .processes()
+            .iter()
+            .filter(|(_, p)| p.user_id() == Some(&user) && p.session_id() == session)
+            .map(|(pid, p)| (*pid, p.parent()))
+            .collect::<Vec<_>>();
+        let descendants = windows_switch_stop_targets(
+            handles.iter().map(|h| h.pid).collect(),
+            &parents,
+            current_pid,
+        );
+        if descendants.iter().any(|pid| system.process(*pid).is_some()) {
+            return Err("停止期间出现残留子进程，未更改当前账号，请重试。".into());
         }
         if !verified_windows_desktop_process_ids(&system, &[executable.clone()])?.is_empty() {
             return Err(
@@ -931,12 +962,24 @@ fn launch_windows_store_target(target: &WindowsStoreCodexTarget) -> Result<(), S
     }
 }
 
+// Keep identity/path data required by the switch gate, without collecting CPU,
+// memory, I/O, environment or command lines on every process poll.
+#[cfg(target_os = "windows")]
+fn refresh_windows_switch_processes(system: &mut sysinfo::System) {
+    system.refresh_processes_specifics(
+        sysinfo::ProcessRefreshKind::new()
+            .with_user(sysinfo::UpdateKind::Always)
+            .with_exe(sysinfo::UpdateKind::Always),
+    );
+}
+
 #[cfg(target_os = "windows")]
 fn wait_for_windows_codex_process(executable: &Path) -> bool {
     let deadline = Instant::now() + Duration::from_millis(WINDOWS_STORE_LAUNCH_TIMEOUT_MS);
     let mut confirmed_since = None;
+    let mut system = sysinfo::System::new();
     loop {
-        let system = sysinfo::System::new_all();
+        refresh_windows_switch_processes(&mut system);
         let pids = verified_windows_desktop_process_ids(&system, &[executable.to_path_buf()])
             .unwrap_or_default();
         // Activation can return a broker PID. Require the installed GUI path to
@@ -1274,6 +1317,30 @@ fn first_spotlight_codex_app_match(query: &str) -> Option<PathBuf> {
 #[cfg(all(test, target_os = "windows"))]
 mod windows_tests {
     use super::*;
+
+    #[test]
+    fn lean_process_snapshot_retains_switch_identity_fields() {
+        let full = sysinfo::System::new_all();
+        let mut lean = sysinfo::System::new();
+        refresh_windows_switch_processes(&mut lean);
+        let pid = sysinfo::get_current_pid().unwrap();
+        let expected = full.process(pid).unwrap();
+        let actual = lean.process(pid).unwrap();
+        assert!(actual.user_id().is_some());
+        assert!(actual.exe().is_some());
+        assert!(actual.session_id().is_some());
+        assert!(actual.start_time() > 0);
+        assert_eq!(actual.user_id(), expected.user_id());
+        assert_eq!(actual.exe(), expected.exe());
+        assert_eq!(actual.parent(), expected.parent());
+        assert_eq!(actual.session_id(), expected.session_id());
+        assert_eq!(actual.start_time(), expected.start_time());
+        refresh_windows_switch_processes(&mut lean);
+        let verified =
+            verified_windows_desktop_process_ids(&lean, &[std::env::current_exe().unwrap()])
+                .unwrap();
+        assert!(verified.contains(&pid));
+    }
 
     #[test]
     fn registered_chatgpt_desktop_is_not_a_cli_or_regular_chatgpt() {
